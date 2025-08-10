@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Ukulele Touch Chord Trainer — Colored Fingers</title>
+<style>
+  :root{
+    --bg:#07121a; --panel:#0f1724; --muted:#9aa8b2; --accent:#2b6cff;
+    --index: #ff4d4d; /* red */
+    --middle: #ffd24d; /* yellow */
+    --ring: #7be37b; /* green */
+    --pinkie: #6fb7ff; /* blue */
+  }
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; -webkit-tap-highlight-color: transparent;}
+  body{background:linear-gradient(180deg,#04101a 0%, #071828 100%);color:#eef;display:flex;align-items:center;justify-content:center;padding:10px}
+  .app{width:100%;max-width:940px;background:var(--panel);border-radius:14px;padding:12px;box-shadow:0 14px 40px rgba(0,0,0,0.6)}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  h1{margin:0;font-size:18px}
+  .controls{margin-left:auto;display:flex;gap:8px;align-items:center}
+  select,button,input[type=file]{font-size:15px;padding:8px;border-radius:8px;border:0;background:#122033;color:#fff}
+  .hint{font-size:13px;color:var(--muted);margin-top:6px}
+  .fretboard-wrap{margin-top:12px;touch-action:none}
+  canvas#fret{width:100%;height:420px;border-radius:10px;background:#000;display:block}
+  .footer{display:flex;gap:8px;align-items:center;margin-top:10px}
+  .status{color:#bfe;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.03)}
+  .fingerbar{display:flex;gap:8px;padding:10px;margin-top:10px;align-items:center;flex-wrap:wrap}
+  .finger-btn{width:44px;height:44px;border-radius:10px;border:0;color:#042;display:flex;align-items:center;justify-content:center;font-weight:700;box-shadow:0 4px 8px rgba(0,0,0,0.4);font-size:16px}
+  .eraser{background:#222;padding:8px;border-radius:8px;color:#fff}
+  .small{font-size:13px;color:var(--muted)}
+  .option{display:flex;align-items:center;gap:6px}
+  @media (max-width:520px){ canvas#fret{height:520px} h1{font-size:16px} .finger-btn{width:40px;height:40px} }
+</style>
+</head>
+<body>
+  <div class="app" role="application" aria-label="Ukulele Touch Chord Trainer Colored Fingers">
+    <header>
+      <h1>Ukulele Touch Chord Trainer — Colored Fingers</h1>
+      <div class="controls">
+        <label for="chordSelect">Chord</label>
+        <select id="chordSelect" aria-label="Choose chord"></select>
+        <button id="randomBtn">Random</button>
+        <label class="option"><input id="requireFinger" type="checkbox" checked />Require finger match</label>
+        <input id="fileInput" type="file" accept="audio/*" style="display:none"/>
+        <button id="uploadBtn">Upload audio</button>
+      </div>
+    </header>
+
+    <div class="hint">Tap a finger button, then tap the fretboard to place that finger. Targets show where each finger should go. When your positions (and fingers, if required) match the target, the chord plays.</div>
+
+    <div class="fretboard-wrap">
+      <canvas id="fret" role="img" aria-label="Fretboard - tap to place fingers"></canvas>
+    </div>
+
+    <div class="fingerbar" id="fingerbar" aria-hidden="false">
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="finger-btn" data-finger="1" id="f1" title="Index" style="background:var(--index);">1</button>
+        <button class="finger-btn" data-finger="2" id="f2" title="Middle" style="background:var(--middle);color:#042">2</button>
+        <button class="finger-btn" data-finger="3" id="f3" title="Ring" style="background:var(--ring);color:#042">3</button>
+        <button class="finger-btn" data-finger="4" id="f4" title="Pinkie" style="background:var(--pinkie);">4</button>
+        <button class="eraser" id="eraser">Eraser</button>
+      </div>
+      <div style="margin-left:auto" class="small">Strings top→bottom: G C E A</div>
+    </div>
+
+    <div class="footer">
+      <div class="status" id="status">Select a chord and place fingers.</div>
+    </div>
+  </div>
+
+<script>
+/* -------------------------
+  Ukulele Touch Trainer — colored fingers
+  - G C E A strings (top->bottom)
+  - CHORDS map: for each chord, provide per-string {fret: n, finger: f}
+  - finger: 0=open, 1=index,2=middle,3=ring,4=pinkie
+  - Tapping places the currently selected finger. Eraser removes finger from string.
+  - Requires exact fret AND finger match if 'Require finger match' is checked.
+  - Tries audio/<CHORD>.mp3 then synth fallback.
+---------------------------*/
+
+/* ---------- chord library ----------
+  Each chord value = array for strings [G, C, E, A]
+  Each entry {fret: <int>, finger: <0-4>}
+  0 means open string (finger 0)
+  finger numbers: 1=index,2=middle,3=ring,4=pinkie
+  (If multiple voicings exist you can add variants later)
+*/
+const CHORDS = {
+  // Major
+  "C":    [{fret:0,finger:0},{fret:0,finger:0},{fret:0,finger:0},{fret:3,finger:3}],
+  "G":    [{fret:0,finger:0},{fret:2,finger:1},{fret:3,finger:3},{fret:2,finger:2}],
+  "D":    [{fret:2,finger:1},{fret:2,finger:1},{fret:2,finger:1},{fret:0,finger:0}], // simple D (bar 2 with index)
+  "A":    [{fret:2,finger:1},{fret:1,finger:2},{fret:0,finger:0},{fret:0,finger:0}],
+  "E":    [{fret:1,finger:1},{fret:4,finger:4},{fret:0,finger:0},{fret:2,finger:2}],
+  "F":    [{fret:2,finger:1},{fret:0,finger:0},{fret:1,finger:2},{fret:0,finger:0}],
+  "Bb":   [{fret:3,finger:1},{fret:2,finger:2},{fret:1,finger:3},{fret:1,finger:4}], // partial barre-ish
+  "B":    [{fret:4,finger:1},{fret:3,finger:2},{fret:2,finger:3},{fret:2,finger:4}],
+  "C#":   [{fret:1,finger:1},{fret:1,finger:1},{fret:1,finger:1},{fret:4,finger:4}], // barre-ish example
+  "G#":   [{fret:3,finger:1},{fret:3,finger:1},{fret:4,finger:3},{fret:4,finger:4}],
+  // Minor
+  "Am":   [{fret:2,finger:1},{fret:0,finger:0},{fret:0,finger:0},{fret:0,finger:0}],
+  "Em":   [{fret:0,finger:0},{fret:4,finger:3},{fret:3,finger:2},{fret:2,finger:1}],
+  "Dm":   [{fret:2,finger:1},{fret:2,finger:1},{fret:1,finger:2},{fret:0,finger:0}],
+  "Bm":   [{fret:2,finger:1},{fret:3,finger:2},{fret:4,finger:3},{fret:4,finger:4}],
+  "Cm":   [{fret:3,finger:1},{fret:3,finger:1},{fret:3,finger:1},{fret:3,finger:1}], // barre C minor
+  // 7th chords
+  "G7":   [{fret:0,finger:0},{fret:2,finger:1},{fret:1,finger:2},{fret:2,finger:3}],
+  "C7":   [{fret:0,finger:0},{fret:0,finger:0},{fret:0,finger:0},{fret:1,finger:1}],
+  "A7":   [{fret:0,finger:0},{fret:1,finger:1},{fret:0,finger:0},{fret:0,finger:0}],
+  "E7":   [{fret:1,finger:1},{fret:4,finger:3},{fret:0,finger:0},{fret:2,finger:2}],
+  "B7":   [{fret:2,finger:1},{fret:1,finger:2},{fret:2,finger:3},{fret:0,finger:0}],
+  // Major7 / minor7 / sus / 6
+  "Cmaj7":[{fret:0,finger:0},{fret:0,finger:0},{fret:0,finger:0},{fret:0,finger:0}], // open Cmaj7 often same as open C
+  "Am7":  [{fret:2,finger:1},{fret:0,finger:0},{fret:0,finger:0},{fret:0,finger:0}],
+  "D7":   [{fret:2,finger:1},{fret:2,finger:1},{fret:2,finger:1},{fret:0,finger:0}],
+  "Gmaj7":[{fret:0,finger:0},{fret:2,finger:1},{fret:2,finger:2},{fret:2,finger:3}],
+  "Asus2":[{fret:2,finger:1},{fret:4,finger:3},{fret:0,finger:0},{fret:0,finger:0}],
+  "Fsus2":[{fret:0,finger:0},{fret:0,finger:0},{fret:1,finger:1},{fret:0,finger:0}],
+  "A6":   [{fret:2,finger:1},{fret:1,finger:2},{fret:2,finger:3},{fret:0,finger:0}],
+  // Add more common chords and voicings...
+  "Dmaj7":[{fret:2,finger:1},{fret:2,finger:1},{fret:2,finger:1},{fret:4,finger:4}],
+  "Emaj7":[{fret:1,finger:1},{fret:4,finger:3},{fret:4,finger:3},{fret:4,finger:3}],
+  "F#m":  [{fret:2,finger:1},{fret:1,finger:2},{fret:1,finger:2},{fret:0,finger:0}],
+  "Bbmaj7":[{fret:3,finger:2},{fret:2,finger:1},{fret:1,finger:3},{fret:1,finger:4}],
+  "C9":   [{fret:0,finger:0},{fret:0,finger:0},{fret:0,finger:0},{fret:3,finger:3}],
+  "G6":   [{fret:0,finger:0},{fret:2,finger:1},{fret:2,finger:2},{fret:2,finger:3}],
+  "Em7":  [{fret:0,finger:0},{fret:4,finger:3},{fret:3,finger:2},{fret:2,finger:1}],
+  "Bbm":  [{fret:1,finger:1},{fret:1,finger:1},{fret:2,finger:3},{fret:3,finger:4}]
+};
+
+// finger color map:
+const FINGER_COLORS = {
+  1: getComputedStyle(document.documentElement).getPropertyValue('--index').trim() || '#ff4d4d',
+  2: getComputedStyle(document.documentElement).getPropertyValue('--middle').trim() || '#ffd24d',
+  3: getComputedStyle(document.documentElement).getPropertyValue('--ring').trim() || '#7be37b',
+  4: getComputedStyle(document.documentElement).getPropertyValue('--pinkie').trim() || '#6fb7ff'
+};
+
+/* --- UI elements --- */
+const canvas = document.getElementById('fret');
+const ctx = canvas.getContext('2d');
+const chordSelect = document.getElementById('chordSelect');
+const randomBtn = document.getElementById('randomBtn');
+const statusEl = document.getElementById('status');
+const requireFingerCheckbox = document.getElementById('requireFinger');
+const fileInput = document.getElementById('fileInput');
+const uploadBtn = document.getElementById('uploadBtn');
+const fingerbar = document.getElementById('fingerbar');
+const eraserBtn = document.getElementById('eraser');
+
+let numStrings = 4, numFrets = 12;
+let padding = 18, nutWidth = 8;
+let board = {};
+let userTouches = {}; // { stringIndex: {fret: n, finger: f} }
+let selectedFinger = 1;
+let eraserMode = false;
+let currentChordName = null;
+
+// audio
+const audioMap = {};
+const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+const stringBaseFreq = [392.00, 261.63, 329.63, 440.00]; // G C E A
+
+/* ---------- init ---------- */
+function init(){
+  // populate chords
+  Object.keys(CHORDS).sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:'base'})).forEach(name=>{
+    const o = document.createElement('option'); o.value = name; o.textContent = name;
+    chordSelect.appendChild(o);
+  });
+  chordSelect.addEventListener('change', ()=> setChord(chordSelect.value));
+  randomBtn.addEventListener('click', ()=> {
+    const keys = Object.keys(CHORDS);
+    setChord(keys[Math.floor(Math.random()*keys.length)]);
+  });
+  // finger buttons
+  document.querySelectorAll('.finger-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      eraserMode = false;
+      document.querySelectorAll('.finger-btn').forEach(b=>b.style.outline = 'none');
+      btn.style.outline = '3px solid rgba(255,255,255,0.12)';
+      selectedFinger = parseInt(btn.dataset.finger,10);
+    });
+  });
+  // set default selection outline
+  document.querySelector('[data-finger="1"]').click();
+  eraserBtn.addEventListener('click', ()=>{
+    eraserMode = true;
+    document.querySelectorAll('.finger-btn').forEach(b=>b.style.outline = 'none');
+    eraserBtn.style.outline = '3px solid rgba(255,255,255,0.12)';
+  });
+  // upload
+  uploadBtn.addEventListener('click', ()=> fileInput.click());
+  fileInput.addEventListener('change', handleFileUpload);
+
+  // canvas events
+  canvas.addEventListener('touchstart', (ev)=> { ev.preventDefault(); for(const t of ev.changedTouches) handleTap(t.clientX, t.clientY); }, {passive:false});
+  canvas.addEventListener('click', (ev)=> handleTap(ev.clientX, ev.clientY));
+
+  // sizing
+  window.addEventListener('resize', fitCanvas);
+  setTimeout(fitCanvas, 60);
+
+  // pre-load audio (non-blocking)
+  Object.keys(CHORDS).forEach(k => tryLoadAudioForChord(k));
+  // set initial chord
+  setChord(Object.keys(CHORDS)[0]);
+}
+
+/* ---------- geometry & draw ---------- */
+function fitCanvas(){
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(canvas.clientWidth * ratio);
+  canvas.height = Math.floor(canvas.clientHeight * ratio);
+  ctx.setTransform(ratio,0,0,ratio,0,0);
+  computeBoardGeometry();
+  draw();
+}
+
+function computeBoardGeometry(){
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const innerW = w - padding*2;
+  const innerH = h - padding*2;
+  const stringSpacing = innerH/(numStrings-1);
+  const fretSpacing = (innerW - nutWidth - 12) / numFrets;
+  board = {
+    x: padding + nutWidth + 6,
+    y: padding,
+    w: innerW - nutWidth - 12,
+    h: innerH,
+    stringSpacing, fretSpacing,
+    nutX: padding,
+    nutWidth
+  };
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);
+  ctx.fillStyle = '#07121a';
+  ctx.fillRect(0,0,canvas.clientWidth,canvas.clientHeight);
+
+  const b = board;
+  // fretboard bg
+  ctx.fillStyle = '#2b1f12';
+  roundRect(ctx, b.x-6, b.y-6, b.w+12, b.h+12, 10, true, false);
+
+  // frets
+  ctx.strokeStyle = '#cfcfcf'; ctx.lineWidth = 2;
+  for(let f=0; f<=numFrets; f++){
+    const x = Math.round(b.x + f * b.fretSpacing);
+    ctx.beginPath(); ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.h); ctx.stroke();
+    if(f>0 && f<=numFrets){
+      ctx.fillStyle = '#e6e6e6'; ctx.font = '12px system-ui';
+      ctx.fillText(String(f), x - b.fretSpacing/2 + 4, b.y + b.h + 18);
+    }
+  }
+  // nut
+  ctx.fillStyle = '#e9e9e9'; ctx.fillRect(b.nutX, b.y, b.nutWidth, b.h);
+
+  // strings
+  for(let s=0; s<numStrings; s++){
+    const y = Math.round(b.y + s * b.stringSpacing);
+    ctx.lineWidth = 3; ctx.strokeStyle = '#ddd';
+    ctx.beginPath(); ctx.moveTo(b.x - 4, y); ctx.lineTo(b.x + b.w + 6, y); ctx.stroke();
+  }
+
+  // draw chord targets (colored)
+  const target = CHORDS[currentChordName];
+  if(target){
+    for(let s=0; s<numStrings; s++){
+      const entry = target[s];
+      if(!entry) continue;
+      const fret = entry.fret || 0;
+      const finger = entry.finger || 0;
+      if(fret > 0){
+        const cx = Math.round(b.x + (fret-0.5) * b.fretSpacing);
+        const cy = Math.round(b.y + s * b.stringSpacing);
+        // ring + colored fill
+        ctx.beginPath(); ctx.arc(cx, cy, 14, 0, Math.PI*2);
+        ctx.fillStyle = (finger && FINGER_COLORS[finger]) ? hexToRgba(FINGER_COLORS[finger], 0.14) : 'rgba(255,255,255,0.08)';
+        ctx.fill();
+        ctx.strokeStyle = (finger && FINGER_COLORS[finger]) ? FINGER_COLORS[finger] : '#fff';
+        ctx.lineWidth = 2; ctx.stroke();
+        // inner label
+        ctx.fillStyle = '#fff'; ctx.font='12px system-ui';
+        if(finger>0) ctx.fillText(String(finger), cx-4, cy+4); else ctx.fillText(String(fret), cx-6, cy+4);
+      } else {
+        // open string marker
+        const cx = Math.round(board.nutX + board.nutWidth + 6);
+        const cy = Math.round(b.y + s * b.stringSpacing - 20);
+        ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI*2); ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1; ctx.stroke();
+        ctx.fillStyle = '#eee'; ctx.font='11px system-ui'; ctx.fillText('O', cx-4, cy+4);
+      }
+    }
+  }
+
+  // draw user touches (colored solid dots)
+  for(const [sStr, val] of Object.entries(userTouches)){
+    const s = parseInt(sStr,10);
+    const cx = Math.round(b.x + (val.fret-0.5) * b.fretSpacing);
+    const cy = Math.round(b.y + s * b.stringSpacing);
+    const col = FINGER_COLORS[val.finger] || '#ffecb3';
+    ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI*2); ctx.fillStyle = col; ctx.fill();
+    ctx.strokeStyle = '#031018'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#042'; ctx.font='11px system-ui'; ctx.fillText(String(val.finger), cx-4, cy+4);
+  }
+}
+
+/* helpers */
+function roundRect(ctx,x,y,w,h,r,fill,stroke){ if(typeof r==='undefined') r=6; ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); if(fill) ctx.fill(); if(stroke) ctx.stroke(); }
+function hexToRgba(hex,alpha){ hex = hex.replace('#',''); if(hex.length===3) hex = hex.split('').map(s=>s+s).join(''); const r=parseInt(hex.substring(0,2),16), g=parseInt(hex.substring(2,4),16), b=parseInt(hex.substring(4,6),16); return `rgba(${r},${g},${b},${alpha})`; }
+
+/* ---------- input mapping ---------- */
+function canvasToBoardPos(clientX, clientY){
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left) * (canvas.width / rect.width) / (window.devicePixelRatio || 1);
+  const y = (clientY - rect.top) * (canvas.height / rect.height) / (window.devicePixelRatio || 1);
+  return {x,y};
+}
+
+function handleTap(clientX, clientY){
+  const pos = canvasToBoardPos(clientX, clientY);
+  // find nearest string
+  let closestS = 0, minDist = Infinity;
+  for(let s=0; s<numStrings; s++){
+    const sy = board.y + s * board.stringSpacing;
+    const d = Math.abs(pos.y - sy);
+    if(d < minDist){ minDist = d; closestS = s; }
+  }
+  // find nearest fret
+  const relX = pos.x - board.x;
+  let fret = Math.round(relX / board.fretSpacing + 0.5);
+  if(fret < 1) fret = 1;
+  if(fret > numFrets) fret = numFrets;
+
+  if(eraserMode){
+    delete userTouches[closestS];
+    eraserBtn.style.outline = 'none';
+    eraserMode = false;
+    // re-select last finger 1
+    document.querySelector('[data-finger="1"]').click();
+  } else {
+    userTouches[closestS] = {fret, finger: selectedFinger};
+  }
+  draw();
+  checkMatch();
+}
+
+/* ---------- matching logic ---------- */
+function checkMatch(){
+  const target = CHORDS[currentChordName];
+  if(!target) return;
+  const requireFinger = requireFingerCheckbox.checked;
+  for(let s=0; s<numStrings; s++){
+    const expected = target[s] || {fret:0,finger:0};
+    const user = userTouches[s] || {fret:0,finger:0};
+    // if expected open
+    if(expected.fret === 0){
+      // require no finger placed
+      if(user && user.finger && user.finger !== 0){
+        setStatus(`Keep string ${s+1} open`, false);
+        return;
+      }
+    } else {
+      if(!user || user.fret !== expected.fret){
+        setStatus(`Place finger ${expected.finger || ''} on fret ${expected.fret} of string ${s+1}`, false);
+        return;
+      }
+      if(requireFinger && (user.finger !== expected.finger)){
+        setStatus(`Use finger ${expected.finger} for string ${s+1}`, false);
+        return;
+      }
+    }
+  }
+  // matched
+  setStatus(`Correct — playing ${currentChordName}`, true);
+  playChord(currentChordName);
+}
+
+/* ---------- audio ---------- */
+function tryLoadAudioForChord(name){
+  if(audioMap[name]) return;
+  const audioPath = `audio/${name}.mp3`;
+  const a = new Audio();
+  a.src = audioPath;
+  a.preload = 'auto';
+  a.addEventListener('canplaythrough', ()=> { audioMap[name] = {type:'file', el:a}; });
+  a.addEventListener('error', ()=> { audioMap[name] = {type:'none'}; });
+  a.load();
+}
+
+function handleFileUpload(ev){
+  const file = ev.target.files[0];
+  if(!file) return;
+  const url = URL.createObjectURL(file);
+  audioMap[currentChordName] = {type:'file', el: new Audio(url)};
+  setStatus(`Custom audio uploaded for ${currentChordName}`, true);
+  fileInput.value = '';
+}
+
+function setStatus(txt, positive=false){
+  statusEl.textContent = txt;
+  if(positive) statusEl.style.background = 'linear-gradient(90deg, rgba(43,108,255,0.08), rgba(50,200,150,0.06))';
+  else statusEl.style.background = 'rgba(255,255,255,0.03)';
+}
+
+function playChord(name){
+  const item = audioMap[name];
+  if(item && item.type === 'file' && item.el){
+    item.el.currentTime = 0;
+    item.el.play().catch(e=> console.warn('play failed',e));
+    return;
+  }
+  // synth fallback
+  synthesizeChord(name);
+}
+
+function synthesizeChord(name){
+  const entries = CHORDS[name];
+  if(!entries) return;
+  const now = audioContext.currentTime;
+  const masterGain = audioContext.createGain(); masterGain.gain.value = 0.001; masterGain.connect(audioContext.destination);
+  masterGain.gain.setValueAtTime(0.001, now);
+  masterGain.gain.exponentialRampToValueAtTime(0.35, now + 0.02);
+
+  for(let s=0; s<numStrings; s++){
+    const fret = entries[s] ? entries[s].fret : 0;
+    const semitone = fret;
+    const base = stringBaseFreq[s];
+    const freq = base * Math.pow(2, semitone/12);
+    const osc = audioContext.createOscillator();
+    const osc2 = audioContext.createOscillator();
+    const g = audioContext.createGain();
+    g.gain.value = 0.16;
+    osc.type = 'sine'; osc2.type='triangle';
+    osc.frequency.value = freq; osc2.frequency.value = freq*2;
+    osc.connect(g); osc2.connect(g); g.connect(masterGain);
+    osc.start(now); osc2.start(now);
+    g.gain.setValueAtTime(0.16, now); g.gain.exponentialRampToValueAtTime(0.0001, now + 1.6);
+    osc.stop(now+1.7); osc2.stop(now+1.7);
+  }
+  masterGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.8);
+  setTimeout(()=> masterGain.disconnect(), 2200);
+}
+
+/* ---------- chord selection ---------- */
+function setChord(name){
+  currentChordName = name;
+  chordSelect.value = name;
+  userTouches = {};
+  setStatus(`Selected ${name}. Place fingers.`, false);
+  tryLoadAudioForChord(name);
+  draw();
+}
+
+/* ---------- bootstrap ---------- */
+window.addEventListener('resize', fitCanvas);
+init();
+
+/* expose setChord if needed */
+window.setChord = setChord;
+
+</script>
+</body>
+</html>
