@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ukulele Fretboard Practice — Camera + Hand Overlay</title>
+  <style>
+    html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,Arial}
+    #app{height:100%;display:flex;flex-direction:column}
+    header{padding:10px;background:#0b1220;color:#fff;display:flex;align-items:center;gap:12px}
+    header h1{font-size:16px;margin:0}
+    #wrap{position:relative;flex:1;display:flex;align-items:center;justify-content:center;background:#111}
+    video#videoEl{display:none /* hidden because we draw video to canvas */ }
+    canvas#drawCanvas{width:100%;height:100%;max-height:calc(100vh - 72px);background:#000;display:block}
+    .controls{display:flex;gap:8px;align-items:center}
+    .controls label{color:#fff;font-size:13px}
+    .controls input[type=range]{width:120px}
+    footer{padding:8px;font-size:13px;color:#ddd;background:#071018}
+    .notice{color:#bcd;margin-left:8px}
+    .hint{font-size:13px;color:#9db}
+    .btn{background:#2b6cff;color:white;border:none;padding:6px 10px;border-radius:6px;cursor:pointer}
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Ukulele Fretboard Practice</h1>
+      <div class="controls">
+        <label>Mirror<input id="mirror" type="checkbox" checked></label>
+        <label>Frets <input type="range" id="frets" min="4" max="16" value="12"></label>
+        <button id="toggleCamera" class="btn">Switch Camera</button>
+        <span class="notice">Allow camera access when prompted.</span>
+      </div>
+    </header>
+
+    <div id="wrap">
+      <video id="videoEl" playsinline></video>
+      <canvas id="drawCanvas"></canvas>
+    </div>
+
+    <footer>
+      <span class="hint">Tips: hold your ukulele (or mimic it) in front of the camera so the fretboard overlay lines up with your real neck. Fingertips are detected and mapped to nearest string &amp; fret. Use the <strong>Frets</strong> slider to match your instrument.</span>
+    </footer>
+  </div>
+
+  <!-- MediaPipe (Hands) via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+  <script>
+  (async function(){
+    const video = document.getElementById('videoEl');
+    const canvas = document.getElementById('drawCanvas');
+    const ctx = canvas.getContext('2d');
+    const mirrorCheckbox = document.getElementById('mirror');
+    const fretsInput = document.getElementById('frets');
+    const toggleCamera = document.getElementById('toggleCamera');
+
+    let currentFacingMode = 'environment'; // try 'user' or 'environment'
+    let cameraObj = null;
+
+    function fitCanvas() {
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(canvas.clientWidth * ratio);
+      canvas.height = Math.floor(canvas.clientHeight * ratio);
+      ctx.setTransform(ratio,0,0,ratio,0,0);
+    }
+    window.addEventListener('resize', fitCanvas);
+    fitCanvas();
+
+    // draw fretboard function
+    function drawFretboard(areaX, areaY, w, h, numStrings=4, numFrets=12){
+      // background strip for fretboard
+      ctx.fillStyle = 'rgba(30,30,30,0.6)';
+      ctx.fillRect(areaX, areaY, w, h);
+      // draw frets (vertical lines)
+      ctx.strokeStyle = 'rgba(200,200,200,0.6)';
+      ctx.lineWidth = 2;
+      const fretPositions = [];
+      for(let f=0; f<=numFrets; f++){
+        const x = Math.round(areaX + (w * f / numFrets));
+        fretPositions.push(x);
+        ctx.beginPath();
+        ctx.moveTo(x, areaY);
+        ctx.lineTo(x, areaY + h);
+        ctx.stroke();
+      }
+      // draw strings (horizontal lines)
+      const stringPositions = [];
+      for(let s=0; s<numStrings; s++){
+        const y = Math.round(areaY + ((s+0.5) * h / numStrings));
+        stringPositions.push(y);
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(areaX, y);
+        ctx.lineTo(areaX + w, y);
+        ctx.stroke();
+      }
+      // draw nut marker (leftmost thicker)
+      ctx.fillStyle = 'rgba(240,240,240,0.9)';
+      ctx.fillRect(fretPositions[0]-4, areaY, 6, h);
+
+      // fret numbers small
+      ctx.fillStyle = 'rgba(220,220,220,0.9)';
+      ctx.font = '12px system-ui';
+      for(let f=1; f<=numFrets; f++){
+        const x = Math.round(areaX + (w * (f-0.5) / numFrets));
+        ctx.fillText(String(f), x-6, areaY + h + 16);
+      }
+
+      return {fretPositions, stringPositions};
+    }
+
+    // map a point (cx,cy) to nearest fret & string
+    function mapToFretString(x, y, board){
+      const {fretPositions, stringPositions, areaX, areaY, areaW, areaH} = board;
+      // clamp inside board
+      if(x < areaX || x > areaX + areaW || y < areaY || y > areaY + areaH) return null;
+      // find nearest string
+      let nearestString = 0, sdist = Infinity;
+      for(let i=0;i<stringPositions.length;i++){
+        const d = Math.abs(y - stringPositions[i]);
+        if(d < sdist){sdist = d; nearestString = i;}
+      }
+      // find fret: we consider between fretPositions[k] and fretPositions[k+1] -> fret number k+1
+      let fretNum = 0;
+      for(let k=0;k<fretPositions.length-1;k++){
+        if(x >= fretPositions[k] && x <= fretPositions[k+1]){ fretNum = k+1; break; }
+      }
+      return {string: nearestString+1, fret: fretNum};
+    }
+
+    // Create MediaPipe Hands
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.5
+    });
+
+    let lastResults = null;
+
+    hands.onResults((results)=>{
+      lastResults = results;
+      renderFrame();
+    });
+
+    // camera util
+    async function startCamera(){
+      if(cameraObj) { try{ cameraObj.stop(); }catch(e){} cameraObj = null; }
+      // use MediaPipe Camera or fallback to getUserMedia and feed frames
+      const constraints = {video: {facingMode: currentFacingMode, width: {ideal:1280}, height:{ideal:720}}};
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        await video.play();
+        const cam = new Camera(video, {
+          onFrame: async () => { await hands.send({image: video}); },
+          width: video.videoWidth || 1280,
+          height: video.videoHeight || 720
+        });
+        cameraObj = cam;
+        cam.start();
+      }catch(err){
+        alert('Could not start camera: ' + err.message);
+        console.error(err);
+      }
+    }
+
+    toggleCamera.addEventListener('click', ()=>{
+      currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+      startCamera();
+    });
+
+    function renderFrame(){
+      if(!lastResults) return;
+      fitCanvas();
+      const mirror = mirrorCheckbox.checked;
+      // draw the camera image as background
+      ctx.save();
+      if(mirror) {
+        ctx.translate(canvas.width/ (window.devicePixelRatio||1), 0);
+        ctx.scale(-1,1);
+      }
+      // draw video onto canvas scaled to fit canvas
+      const vw = video.videoWidth || video.clientWidth;
+      const vh = video.videoHeight || video.clientHeight;
+      // fit video into canvas preserving aspect
+      const scale = Math.max(canvas.clientWidth / vw, canvas.clientHeight / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      const dx = (canvas.clientWidth - dw)/2;
+      const dy = (canvas.clientHeight - dh)/2;
+      ctx.drawImage(video, 0, 0, vw, vh, dx, dy, dw, dh);
+      ctx.restore();
+
+      // draw transparent overlay and fretboard near centre-left (you can move logic)
+      const boardW = Math.min(canvas.clientWidth * 0.8, 900);
+      const boardH = Math.min(canvas.clientHeight * 0.45, 260);
+      const boardX = (canvas.clientWidth - boardW)/2;
+      const boardY = canvas.clientHeight - boardH - 40; // bottom area
+      const numFrets = parseInt(fretsInput.value,10);
+      const fb = drawFretboard(boardX, boardY, boardW, boardH, 4, numFrets);
+      fb.areaX = boardX; fb.areaY = boardY; fb.areaW = boardW; fb.areaH = boardH;
+
+      // if landmarks exist, draw them and map fingertips to fretboard
+      if(lastResults.multiHandLandmarks && lastResults.multiHandLandmarks.length){
+        for(const landmarks of lastResults.multiHandLandmarks){
+          // draw all landmarks
+          drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth:2});
+          drawLandmarks(ctx, landmarks, {color: '#FF0066', lineWidth:1});
+
+          // check fingertip indexes [4,8,12,16,20]
+          const tipIndexes = [4,8,12,16,20];
+          for(const idx of tipIndexes){
+            const lm = landmarks[idx];
+            // lm.x/lm.y are normalized 0..1 relative to input image
+            // need to transform to canvas coords matching drawImage transform
+            // compute canvas coordinate for lm: map normalized to vw,vh then to dw/dh & offsets
+            const vw = video.videoWidth || video.clientWidth;
+            const vh = video.videoHeight || video.clientHeight;
+            const scale = Math.max(canvas.clientWidth / vw, canvas.clientHeight / vh);
+            const dw = vw * scale;
+            const dh = vh * scale;
+            const dx = (canvas.clientWidth - dw)/2;
+            const dy = (canvas.clientHeight - dh)/2;
+            let cx = dx + lm.x * dw;
+            let cy = dy + lm.y * dh;
+            // mirror if needed
+            if(mirror) cx = canvas.clientWidth - cx;
+
+            // draw fingertip circle
+            ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI*2); ctx.fillStyle = 'rgba(255,160,0,0.9)'; ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+
+            // map to fretboard
+            const mapping = mapToFretString(cx, cy, fb);
+            if(mapping){
+              // draw mapping hint on fretboard position
+              // get fret center x
+              const fretXstart = fb.fretPositions[mapping.fret-1];
+              const fretXend = fb.fretPositions[mapping.fret];
+              const fretCenterX = Math.round((fretXstart + fretXend)/2);
+              const stringY = fb.stringPositions[mapping.string-1];
+              // show dot on the mapped string/fret
+              ctx.beginPath(); ctx.arc(fretCenterX, stringY, 10, 0, Math.PI*2);
+              ctx.fillStyle = 'rgba(30,180,255,0.9)'; ctx.fill();
+              ctx.strokeStyle = '#003044'; ctx.lineWidth = 2; ctx.stroke();
+              // label
+              ctx.fillStyle = '#fff'; ctx.font = '12px system-ui';
+              ctx.fillText(`${mapping.string}꞉${mapping.fret}`, fretCenterX+12, stringY+4);
+            }
+          }
+        }
+      }
+    }
+
+    // start
+    await startCamera();
+
+    // tiny render loop to keep UI responsive and show camera even when no landmarks
+    (function loop(){
+      if(!lastResults){
+        // draw just camera background until first hand detection occurs
+        if(video && video.readyState >= 2){
+          fitCanvas();
+          const mirror = mirrorCheckbox.checked;
+          ctx.save();
+          if(mirror){ ctx.translate(canvas.width/ (window.devicePixelRatio||1), 0); ctx.scale(-1,1); }
+          const vw = video.videoWidth || video.clientWidth;
+          const vh = video.videoHeight || video.clientHeight;
+          const scale = Math.max(canvas.clientWidth / vw, canvas.clientHeight / vh);
+          const dw = vw * scale; const dh = vh * scale; const dx = (canvas.clientWidth - dw)/2; const dy = (canvas.clientHeight - dh)/2;
+          ctx.drawImage(video, 0, 0, vw, vh, dx, dy, dw, dh);
+          ctx.restore();
+        }
+      }
+      requestAnimationFrame(loop);
+    })();
+
+  })();
+  </script>
+</body>
+</html>
